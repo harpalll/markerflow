@@ -1,6 +1,7 @@
 import type { ImageData, BBox, DetectionResult, AnchorPosition, MarkerDebugInfo } from '../../types/marker';
 import { regionDensity } from '../image/pixelUtils';
 import {
+  BLACK_THRESHOLD,
   MIN_BORDER_DENSITY,
   MIN_ANCHOR_DENSITY,
   MAX_CENTER_DENSITY,
@@ -12,25 +13,25 @@ import {
 } from '../../constants/scanner';
 
 /**
- * Validate that a candidate bounding box actually contains Marker 1:
- *  1. Thick black border on all 4 sides
- *  2. Mostly empty inner area
- *  3. Exactly one small black square in a corner (the anchor)
- *  4. Center is not filled
+ * Validate that a candidate bounding box actually contains Marker 1.
+ * Uses the provided threshold for all density checks.
  */
-export function validateMarker1(img: ImageData, bbox: BBox): DetectionResult {
+export function validateMarker1(
+  img: ImageData,
+  bbox: BBox,
+  threshold = BLACK_THRESHOLD
+): DetectionResult {
   const { x, y, width: bw, height: bh } = bbox;
   const borderW = Math.round(bw * BORDER_BAND);
   const borderH = Math.round(bh * BORDER_BAND);
 
-  const topD = regionDensity(img, x, y, bw, borderH);
-  const bottomD = regionDensity(img, x, y + bh - borderH, bw, borderH);
-  const leftD = regionDensity(img, x, y, borderW, bh);
-  const rightD = regionDensity(img, x + bw - borderW, y, borderW, bh);
+  const topD = regionDensity(img, x, y, bw, borderH, threshold);
+  const bottomD = regionDensity(img, x, y + bh - borderH, bw, borderH, threshold);
+  const leftD = regionDensity(img, x, y, borderW, bh, threshold);
+  const rightD = regionDensity(img, x + bw - borderW, y, borderW, bh, threshold);
 
   const borderDensity = { top: topD, bottom: bottomD, left: leftD, right: rightD };
 
-  // all 4 borders must be solid black
   const failedBorders = Object.entries(borderDensity)
     .filter(([_, d]) => d < MIN_BORDER_DENSITY);
 
@@ -47,7 +48,7 @@ export function validateMarker1(img: ImageData, bbox: BBox): DetectionResult {
   const innerY = y + borderH + Math.round(bh * 0.05);
   const innerW = bw - 2 * borderW - Math.round(bw * 0.1);
   const innerH = bh - 2 * borderH - Math.round(bh * 0.1);
-  const innerD = regionDensity(img, innerX, innerY, innerW, innerH);
+  const innerD = regionDensity(img, innerX, innerY, innerW, innerH, threshold);
 
   if (innerD > MAX_INNER_DENSITY) {
     return {
@@ -57,12 +58,12 @@ export function validateMarker1(img: ImageData, bbox: BBox): DetectionResult {
     };
   }
 
-  // center region — should be nearly empty
+  // center region
   const cx = x + Math.round(bw * 0.35);
   const cy = y + Math.round(bh * 0.35);
   const cw = Math.round(bw * 0.30);
   const ch = Math.round(bh * 0.30);
-  const centerD = regionDensity(img, cx, cy, cw, ch);
+  const centerD = regionDensity(img, cx, cy, cw, ch, threshold);
 
   if (centerD > MAX_CENTER_DENSITY) {
     return {
@@ -72,8 +73,7 @@ export function validateMarker1(img: ImageData, bbox: BBox): DetectionResult {
     };
   }
 
-  // anchor detection — check all 4 inner corners
-  const anchorResult = findAnchor(img, bbox);
+  const anchorResult = findAnchor(img, bbox, threshold);
   if (!anchorResult.found) {
     return {
       ok: false,
@@ -96,7 +96,6 @@ export function validateMarker1(img: ImageData, bbox: BBox): DetectionResult {
     squareRatio: bw / bh,
   };
 
-  // confidence = average of border densities + anchor strength
   const avgBorder = (topD + bottomD + leftD + rightD) / 4;
   const confidence = avgBorder * 0.5
     + anchorResult.densities[anchorResult.position!] * 0.3
@@ -118,17 +117,11 @@ interface AnchorResult {
   densities: Record<AnchorPosition, number>;
 }
 
-/**
- * Look for the small filled square in exactly one of the four inner corners.
- * The anchor sits just inside the border — not touching the outer edge,
- * not in the center.
- */
-function findAnchor(img: ImageData, bbox: BBox): AnchorResult {
+function findAnchor(img: ImageData, bbox: BBox, threshold: number): AnchorResult {
   const { x, y, width: bw, height: bh } = bbox;
   const s0 = ANCHOR_INSET_START;
   const s1 = ANCHOR_INSET_END;
 
-  // each corner region is a small square inside the border
   const corners: Record<AnchorPosition, [number, number, number, number]> = {
     'top-left':     [x + Math.round(bw * s0), y + Math.round(bh * s0), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
     'top-right':    [x + Math.round(bw * (1 - s1)), y + Math.round(bh * s0), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
@@ -141,10 +134,9 @@ function findAnchor(img: ImageData, bbox: BBox): AnchorResult {
 
   for (const pos of positions) {
     const [rx, ry, rw, rh] = corners[pos];
-    densities[pos] = regionDensity(img, rx, ry, rw, rh);
+    densities[pos] = regionDensity(img, rx, ry, rw, rh, threshold);
   }
 
-  // find corners with enough black to be an anchor
   const hits = positions.filter(p => densities[p] >= MIN_ANCHOR_DENSITY);
 
   if (hits.length === 0) {
@@ -152,30 +144,23 @@ function findAnchor(img: ImageData, bbox: BBox): AnchorResult {
   }
 
   if (hits.length > 1) {
-    // if multiple corners are dark, check if one is clearly dominant
     const sorted = [...hits].sort((a, b) => densities[b] - densities[a]);
     const gap = densities[sorted[0]] - densities[sorted[1]];
     if (gap < 0.10) {
       return { found: false, reason: 'multiple_anchor_candidates', densities };
     }
-    // one is clearly stronger — use it
     return { found: true, position: sorted[0], reason: '', densities };
   }
 
-  // validate the anchor isn't too large (catches TestImage4 — oversized block)
   const anchorPos = hits[0];
   const [ax, ay, aw, ah] = corners[anchorPos];
-  if (isAnchorOversized(img, bbox, anchorPos, ax, ay, aw, ah)) {
+  if (isAnchorOversized(img, bbox, anchorPos, ax, ay, aw, ah, threshold)) {
     return { found: false, reason: 'anchor_too_large', densities };
   }
 
   return { found: true, position: anchorPos, reason: '', densities };
 }
 
-/**
- * Check if the black region extends well beyond the expected anchor zone
- * toward the center of the marker. Direction depends on which corner.
- */
 function isAnchorOversized(
   img: ImageData,
   bbox: BBox,
@@ -183,11 +168,11 @@ function isAnchorOversized(
   cx: number,
   cy: number,
   cw: number,
-  ch: number
+  ch: number,
+  threshold: number
 ): boolean {
   const span = Math.round(bbox.width * MAX_ANCHOR_SIDE_RATIO * 1.3);
 
-  // sample the area just past the anchor, toward the marker center
   let probeX: number, probeY: number;
   switch (pos) {
     case 'top-left':
@@ -208,7 +193,6 @@ function isAnchorOversized(
       break;
   }
 
-  // clamp to image bounds
   probeX = Math.max(bbox.x, probeX);
   probeY = Math.max(bbox.y, probeY);
   const pw = Math.min(span, bbox.x + bbox.width - probeX);
@@ -216,5 +200,5 @@ function isAnchorOversized(
 
   if (pw <= 0 || ph <= 0) return false;
 
-  return regionDensity(img, probeX, probeY, pw, ph) > 0.40;
+  return regionDensity(img, probeX, probeY, pw, ph, threshold) > 0.40;
 }

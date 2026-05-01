@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, TouchableOpacity, Text, SafeAreaView } from 'react-native';
+import { StyleSheet, View, TouchableOpacity, Text, Platform } from 'react-native';
 import { ScannerScreen } from './src/components/ScannerScreen';
 import { TestHarness } from './src/components/TestHarness';
+
+const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? 36 : 0;
 
 type Tab = 'scanner' | 'tests';
 
@@ -15,10 +17,11 @@ export default function App() {
 
       {tab === 'scanner' ? <ScannerScreen /> : <TestHarness />}
 
-      <SafeAreaView style={styles.tabBar}>
+      <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tab, tab === 'scanner' && styles.tabActive]}
           onPress={() => setTab('scanner')}
+          activeOpacity={0.7}
         >
           <Text style={[styles.tabText, tab === 'scanner' && styles.tabTextActive]}>
             Scanner
@@ -27,12 +30,13 @@ export default function App() {
         <TouchableOpacity
           style={[styles.tab, tab === 'tests' && styles.tabActive]}
           onPress={() => setTab('tests')}
+          activeOpacity={0.7}
         >
           <Text style={[styles.tabText, tab === 'tests' && styles.tabTextActive]}>
             Tests
           </Text>
         </TouchableOpacity>
-      </SafeAreaView>
+      </View>
     </View>
   );
 }
@@ -47,10 +51,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#111',
     borderTopWidth: 1,
     borderTopColor: '#222',
+    paddingBottom: Platform.OS === 'android' ? 8 : 20,
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
   },
   tabActive: {
@@ -59,7 +64,7 @@ const styles = StyleSheet.create({
   },
   tabText: {
     color: '#666',
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
   tabTextActive: {

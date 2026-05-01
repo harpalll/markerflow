@@ -1,41 +1,83 @@
 import type { ImageData, BBox, DetectionResult } from '../../types/marker';
-import { grayAt, isBlack } from '../image/pixelUtils';
+import { grayAt, isBlack, imageStats, computeAdaptiveThreshold } from '../image/pixelUtils';
 import { validateMarker1 } from './validateMarker1';
 import {
   MIN_SQUARE_RATIO,
   MAX_SQUARE_RATIO,
 } from '../../constants/scanner';
 
+export interface DetectionStats {
+  imgSize: string;
+  mean: number;
+  threshold: number;
+  blackPct: number;
+  candidateFound: boolean;
+  candidateBox?: string;
+  squareRatio?: number;
+}
+
 /**
  * Main entry point: takes decoded image data, finds a Marker 1 candidate,
  * validates its structure, and returns the result.
+ * Also returns stats for debug display.
  */
-export function detectMarker1(img: ImageData): DetectionResult {
-  const candidate = findCandidate(img);
+export function detectMarker1(
+  img: ImageData,
+  thresholdOverride?: number
+): DetectionResult & { stats?: DetectionStats } {
+  const stats = imageStats(img);
+  const threshold = thresholdOverride ?? computeAdaptiveThreshold(img);
+
+  // count black pixels at this threshold
+  const { width, height } = img;
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 200));
+  let blackCount = 0;
+  let sampleCount = 0;
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      if (grayAt(img, x, y) < threshold) blackCount++;
+      sampleCount++;
+    }
+  }
+  const blackPct = sampleCount > 0 ? blackCount / sampleCount : 0;
+
+  const debugStats: DetectionStats = {
+    imgSize: `${width}x${height}`,
+    mean: Math.round(stats.mean),
+    threshold: Math.round(threshold),
+    blackPct: Math.round(blackPct * 100),
+    candidateFound: false,
+  };
+
+  const candidate = findCandidate(img, threshold);
   if (!candidate) {
-    return { ok: false, reason: 'no_candidate_found' };
+    return { ok: false, reason: 'no_candidate_found', stats: debugStats };
   }
 
+  debugStats.candidateFound = true;
+  debugStats.candidateBox = `${candidate.width}x${candidate.height} at (${candidate.x},${candidate.y})`;
+
   const ratio = candidate.width / candidate.height;
+  debugStats.squareRatio = Math.round(ratio * 100) / 100;
+
   if (ratio < MIN_SQUARE_RATIO || ratio > MAX_SQUARE_RATIO) {
     return {
       ok: false,
       reason: 'candidate_not_square',
       debug: { squareRatio: ratio } as any,
+      stats: debugStats,
     };
   }
 
-  return validateMarker1(img, candidate);
+  const result = validateMarker1(img, candidate, threshold);
+  return { ...result, stats: debugStats };
 }
 
 /**
- * Scan the image for a rectangular region of dense black pixels
- * that could be the Marker 1 outer border.
- *
- * Strategy: find the tight bounding box of all "black" pixels,
- * then verify it occupies a reasonable portion of the frame.
+ * Scan for the bounding box of all "black" pixels in the image.
+ * Uses the adaptive threshold instead of a fixed constant.
  */
-function findCandidate(img: ImageData): BBox | null {
+function findCandidate(img: ImageData, threshold: number): BBox | null {
   const { width, height } = img;
 
   let minX = width;
@@ -43,12 +85,11 @@ function findCandidate(img: ImageData): BBox | null {
   let maxX = 0;
   let maxY = 0;
 
-  // scan with step for speed — every 2nd pixel on each axis
   const step = Math.max(1, Math.floor(Math.min(width, height) / 250));
 
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
-      if (isBlack(grayAt(img, x, y))) {
+      if (isBlack(grayAt(img, x, y), threshold)) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
@@ -62,11 +103,10 @@ function findCandidate(img: ImageData): BBox | null {
   const bw = maxX - minX;
   const bh = maxY - minY;
 
-  // reject tiny noise or things that fill the entire frame
   const imgArea = width * height;
   const bboxArea = bw * bh;
-  if (bboxArea < imgArea * 0.02) return null; // too small
-  if (bboxArea > imgArea * 0.98) return null; // fills entire frame — probably background
+  if (bboxArea < imgArea * 0.01) return null;
+  if (bboxArea > imgArea * 0.98) return null;
 
   return { x: minX, y: minY, width: bw, height: bh };
 }

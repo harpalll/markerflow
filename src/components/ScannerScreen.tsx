@@ -4,19 +4,18 @@ import {
   Text,
   View,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { REQUIRED_MARKERS, OUTPUT_SIZE, DETECTION_DOWNSCALE, CAPTURE_QUALITY } from '../constants/scanner';
 import { decodeJpegFromBase64 } from '../utils/image/decodeJpeg';
-import { downscale } from '../utils/image/pixelUtils';
-import { detectMarker1 } from '../utils/marker/detectMarker1';
+import { detectMarker1, DetectionStats } from '../utils/marker/detectMarker1';
 import { rotationForAnchor } from '../utils/marker/orientation';
-import type { ProcessedMarker, DetectionResult } from '../types/marker';
+import type { ProcessedMarker } from '../types/marker';
 
 type Screen = 'scanner' | 'results';
 
@@ -25,6 +24,7 @@ export function ScannerScreen() {
   const [screen, setScreen] = useState<Screen>('scanner');
   const [markers, setMarkers] = useState<ProcessedMarker[]>([]);
   const [status, setStatus] = useState('Ready — tap Capture to detect');
+  const [debugInfo, setDebugInfo] = useState('');
   const [processing, setProcessing] = useState(false);
   const cameraRef = useRef<CameraView>(null);
   const cameraReady = useRef(false);
@@ -42,6 +42,7 @@ export function ScannerScreen() {
 
     setProcessing(true);
     setStatus('Capturing...');
+    setDebugInfo('');
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
@@ -57,8 +58,9 @@ export function ScannerScreen() {
       }
 
       setStatus('Detecting...');
+      setDebugInfo(`photo: ${photo.width}x${photo.height}`);
 
-      // downscale using native image manipulator first — much faster than JS decode on full-res
+      // downscale natively first — way faster than JS decode on full-res
       const small = await manipulateAsync(
         photo.uri,
         [{ resize: { width: DETECTION_DOWNSCALE } }],
@@ -72,7 +74,17 @@ export function ScannerScreen() {
       }
 
       const decoded = decodeJpegFromBase64(small.base64);
-      const result: DetectionResult = detectMarker1(decoded);
+      const result = detectMarker1(decoded);
+
+      // show debug stats regardless of result
+      if (result.stats) {
+        const s = result.stats;
+        setDebugInfo(
+          `${s.imgSize} | mean=${s.mean} thresh=${s.threshold} black=${s.blackPct}%` +
+          (s.candidateBox ? `\ncandidate: ${s.candidateBox} ratio=${s.squareRatio}` : '') +
+          (!s.candidateFound ? '\nno candidate bbox found' : '')
+        );
+      }
 
       if (!result.ok) {
         setStatus(`Rejected: ${result.reason}`);
@@ -80,9 +92,9 @@ export function ScannerScreen() {
         return;
       }
 
-      setStatus('Extracting marker...');
+      setStatus('Extracting...');
 
-      // map bbox from downscaled coords back to original image coords
+      // map bbox from downscaled coords to original image
       const scaleX = photo.width / decoded.width;
       const scaleY = photo.height / decoded.height;
 
@@ -122,7 +134,7 @@ export function ScannerScreen() {
         if (next.length >= REQUIRED_MARKERS) {
           setStatus(`Done — ${REQUIRED_MARKERS} markers collected`);
         } else {
-          setStatus(`Detected! (${next.length}/${REQUIRED_MARKERS})`);
+          setStatus(`Detected! anchor=${result.anchor} (${next.length}/${REQUIRED_MARKERS})`);
         }
         return next;
       });
@@ -137,9 +149,9 @@ export function ScannerScreen() {
   const reset = useCallback(() => {
     setMarkers([]);
     setStatus('Ready — tap Capture to detect');
+    setDebugInfo('');
   }, []);
 
-  // permission states
   if (!permission) {
     return (
       <View style={styles.center}>
@@ -159,11 +171,10 @@ export function ScannerScreen() {
     );
   }
 
-  // results screen
   if (screen === 'results') {
     return (
-      <SafeAreaView style={styles.root}>
-        <View style={styles.header}>
+      <View style={styles.root}>
+        <View style={styles.resultsHeader}>
           <Text style={styles.title}>Detected Markers ({markers.length})</Text>
           <TouchableOpacity onPress={() => setScreen('scanner')}>
             <Text style={styles.link}>Back</Text>
@@ -183,11 +194,10 @@ export function ScannerScreen() {
             </View>
           ))}
         </ScrollView>
-      </SafeAreaView>
+      </View>
     );
   }
 
-  // scanner screen
   return (
     <View style={styles.root}>
       <CameraView
@@ -204,8 +214,9 @@ export function ScannerScreen() {
         </View>
       </CameraView>
 
-      <SafeAreaView style={styles.controls}>
+      <View style={styles.controls}>
         <Text style={styles.status}>{status}</Text>
+        {debugInfo !== '' && <Text style={styles.debug}>{debugInfo}</Text>}
         <Text style={styles.count}>
           {markers.length} / {REQUIRED_MARKERS}
         </Text>
@@ -215,13 +226,14 @@ export function ScannerScreen() {
             style={[styles.btn, styles.btnPrimary, processing && styles.btnDisabled]}
             onPress={captureAndDetect}
             disabled={processing || markers.length >= REQUIRED_MARKERS}
+            activeOpacity={0.7}
           >
             <Text style={styles.btnText}>
               {processing ? 'Processing...' : 'Capture'}
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.btn} onPress={reset}>
+          <TouchableOpacity style={styles.btn} onPress={reset} activeOpacity={0.7}>
             <Text style={styles.btnText}>Reset</Text>
           </TouchableOpacity>
 
@@ -229,12 +241,13 @@ export function ScannerScreen() {
             <TouchableOpacity
               style={[styles.btn, styles.btnPrimary]}
               onPress={() => setScreen('results')}
+              activeOpacity={0.7}
             >
               <Text style={styles.btnText}>Results</Text>
             </TouchableOpacity>
           )}
         </View>
-      </SafeAreaView>
+      </View>
     </View>
   );
 }
@@ -274,18 +287,25 @@ const styles = StyleSheet.create({
   controls: {
     backgroundColor: '#111',
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 24,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'android' ? 12 : 28,
   },
   status: {
-    color: '#aaa',
+    color: '#ccc',
     fontSize: 13,
     textAlign: 'center',
     fontFamily: 'monospace',
   },
+  debug: {
+    color: '#666',
+    fontSize: 11,
+    textAlign: 'center',
+    fontFamily: 'monospace',
+    marginTop: 4,
+  },
   count: {
     color: '#fff',
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: '700',
     textAlign: 'center',
     marginVertical: 6,
@@ -294,12 +314,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 12,
-    marginTop: 8,
+    marginTop: 6,
   },
   btn: {
     backgroundColor: '#333',
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: 8,
   },
   btnPrimary: {
@@ -319,12 +339,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 16,
   },
-  header: {
+  resultsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingTop: Platform.OS === 'android' ? 48 : 56,
     paddingBottom: 8,
   },
   title: {
@@ -340,6 +360,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 16,
     gap: 16,
+    paddingBottom: 32,
   },
   markerCard: {
     alignItems: 'center',

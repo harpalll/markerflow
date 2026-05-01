@@ -5,7 +5,7 @@ import {
   View,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
+  Platform,
 } from 'react-native';
 import { detectMarker1 } from '../utils/marker/detectMarker1';
 import {
@@ -122,7 +122,7 @@ export function TestHarness() {
   const total = results.length;
 
   return (
-    <SafeAreaView style={styles.root}>
+    <View style={styles.root}>
       <View style={styles.header}>
         <Text style={styles.title}>Detection Test Harness</Text>
         <TouchableOpacity
@@ -158,7 +158,7 @@ export function TestHarness() {
           </View>
         ))}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -172,7 +172,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingTop: Platform.OS === 'android' ? 48 : 56,
     paddingBottom: 8,
   },
   title: {
