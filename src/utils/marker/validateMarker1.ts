@@ -1,7 +1,6 @@
 import type { ImageData, BBox, DetectionResult, AnchorPosition, MarkerDebugInfo } from '../../types/marker';
 import { regionDensity } from '../image/pixelUtils';
 import {
-  BLACK_THRESHOLD,
   MIN_BORDER_DENSITY,
   MIN_ANCHOR_DENSITY,
   MAX_CENTER_DENSITY,
@@ -166,8 +165,7 @@ function findAnchor(img: ImageData, bbox: BBox): AnchorResult {
   // validate the anchor isn't too large (catches TestImage4 — oversized block)
   const anchorPos = hits[0];
   const [ax, ay, aw, ah] = corners[anchorPos];
-  const anchorSize = checkAnchorSize(img, bbox, ax, ay, aw, ah);
-  if (anchorSize === 'too_large') {
+  if (isAnchorOversized(img, bbox, anchorPos, ax, ay, aw, ah)) {
     return { found: false, reason: 'anchor_too_large', densities };
   }
 
@@ -175,37 +173,48 @@ function findAnchor(img: ImageData, bbox: BBox): AnchorResult {
 }
 
 /**
- * Verify the dense black region in the anchor corner isn't oversized.
- * A valid Marker 1 anchor is small — roughly 10-22% of marker side.
- * If the black blob extends much further, it's an incorrect marker.
+ * Check if the black region extends well beyond the expected anchor zone
+ * toward the center of the marker. Direction depends on which corner.
  */
-function checkAnchorSize(
+function isAnchorOversized(
   img: ImageData,
   bbox: BBox,
-  cornerX: number,
-  cornerY: number,
-  cornerW: number,
-  cornerH: number
-): 'ok' | 'too_large' {
-  // expand the search area beyond the corner region
-  const expandedW = Math.round(bbox.width * MAX_ANCHOR_SIDE_RATIO * 1.5);
-  const expandedH = Math.round(bbox.height * MAX_ANCHOR_SIDE_RATIO * 1.5);
+  pos: AnchorPosition,
+  cx: number,
+  cy: number,
+  cw: number,
+  ch: number
+): boolean {
+  const span = Math.round(bbox.width * MAX_ANCHOR_SIDE_RATIO * 1.3);
 
-  // check the area just outside the expected anchor zone
-  // if it's also heavily black, the "anchor" is actually a large block
-  const outerX = cornerX + cornerW;
-  const outerY = cornerY + cornerH;
-  const outerW = Math.min(expandedW, bbox.x + bbox.width - outerX);
-  const outerH = Math.min(expandedH, bbox.y + bbox.height - outerY);
-
-  if (outerW <= 0 || outerH <= 0) return 'ok';
-
-  const outerDensity = regionDensity(img, outerX, outerY, outerW, outerH);
-
-  // if the area adjacent to the anchor is also very dark, the block is too big
-  if (outerDensity > 0.40) {
-    return 'too_large';
+  // sample the area just past the anchor, toward the marker center
+  let probeX: number, probeY: number;
+  switch (pos) {
+    case 'top-left':
+      probeX = cx + cw;
+      probeY = cy + ch;
+      break;
+    case 'top-right':
+      probeX = cx - span;
+      probeY = cy + ch;
+      break;
+    case 'bottom-left':
+      probeX = cx + cw;
+      probeY = cy - span;
+      break;
+    case 'bottom-right':
+      probeX = cx - span;
+      probeY = cy - span;
+      break;
   }
 
-  return 'ok';
+  // clamp to image bounds
+  probeX = Math.max(bbox.x, probeX);
+  probeY = Math.max(bbox.y, probeY);
+  const pw = Math.min(span, bbox.x + bbox.width - probeX);
+  const ph = Math.min(span, bbox.y + bbox.height - probeY);
+
+  if (pw <= 0 || ph <= 0) return false;
+
+  return regionDensity(img, probeX, probeY, pw, ph) > 0.40;
 }

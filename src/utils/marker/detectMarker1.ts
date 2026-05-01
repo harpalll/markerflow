@@ -1,8 +1,7 @@
 import type { ImageData, BBox, DetectionResult } from '../../types/marker';
-import { regionDensity, grayAt, isBlack } from '../image/pixelUtils';
+import { grayAt, isBlack } from '../image/pixelUtils';
 import { validateMarker1 } from './validateMarker1';
 import {
-  BLACK_THRESHOLD,
   MIN_SQUARE_RATIO,
   MAX_SQUARE_RATIO,
 } from '../../constants/scanner';
