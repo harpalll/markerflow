@@ -76,13 +76,13 @@ export function ScannerScreen() {
       const decoded = decodeJpegFromBase64(small.base64);
       const result = detectMarker1(decoded);
 
-      // show debug stats regardless of result
       if (result.stats) {
         const s = result.stats;
         setDebugInfo(
           `${s.imgSize} | mean=${s.mean} thresh=${s.threshold} black=${s.blackPct}%` +
-          (s.candidateBox ? `\ncandidate: ${s.candidateBox} ratio=${s.squareRatio}` : '') +
-          (!s.candidateFound ? '\nno candidate bbox found' : '')
+          `\ncandidates=${s.candidatesChecked ?? 0}` +
+          (s.candidateBox ? ` best: ${s.candidateBox} ratio=${s.squareRatio}` : '') +
+          (s.candidateFound ? ' [MATCH]' : '')
         );
       }
 
