@@ -1,20 +1,48 @@
 import type { ImageData, BBox, DetectionResult, AnchorPosition, MarkerDebugInfo } from '../../types/marker';
-import { regionDensity } from '../image/pixelUtils';
+import { grayAt, regionDensity } from '../image/pixelUtils';
 import {
   BLACK_THRESHOLD,
   MIN_BORDER_DENSITY,
-  MIN_ANCHOR_DENSITY,
+  BORDER_BAND,
+  BORDER_EXCLUSION,
+  ANCHOR_ZONE_START,
+  ANCHOR_ZONE_END,
+  MIN_ANCHOR_SIDE,
+  MAX_ANCHOR_SIDE,
+  MIN_ANCHOR_AREA_RATIO,
+  MAX_ANCHOR_AREA_RATIO,
+  MIN_ANCHOR_ASPECT,
+  MAX_ANCHOR_ASPECT,
+  CENTER_ZONE_START,
+  CENTER_ZONE_END,
+  INNER_ZONE_START,
+  INNER_ZONE_END,
   MAX_CENTER_DENSITY,
   MAX_INNER_DENSITY,
-  BORDER_BAND,
-  ANCHOR_INSET_START,
-  ANCHOR_INSET_END,
-  MAX_ANCHOR_SIDE_RATIO,
+  MAX_INTERNAL_COMPONENT_SIDE,
 } from '../../constants/scanner';
+
+interface Component {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  area: number;
+  centroidX: number;
+  centroidY: number;
+}
 
 /**
  * Validate that a candidate bounding box actually contains Marker 1.
- * Uses the provided threshold for all density checks.
+ *
+ * Pipeline:
+ * 1. Validate border density
+ * 2. Find internal connected black components (excluding border)
+ * 3. Reject oversized corner blocks
+ * 4. Reject high center density
+ * 5. Reject large non-corner internal blocks
+ * 6. Find exactly one valid small anchor in a corner zone
+ * 7. Check inner density excluding anchor
  */
 export function validateMarker1(
   img: ImageData,
@@ -22,6 +50,9 @@ export function validateMarker1(
   threshold = BLACK_THRESHOLD
 ): DetectionResult {
   const { x, y, width: bw, height: bh } = bbox;
+  const side = Math.min(bw, bh);
+
+  // --- 1. Border validation ---
   const borderW = Math.round(bw * BORDER_BAND);
   const borderH = Math.round(bh * BORDER_BAND);
 
@@ -43,177 +74,342 @@ export function validateMarker1(
     };
   }
 
-  // inner area — exclude borders
-  const innerX = x + borderW + Math.round(bw * 0.05);
-  const innerY = y + borderH + Math.round(bh * 0.05);
-  const innerW = bw - 2 * borderW - Math.round(bw * 0.1);
-  const innerH = bh - 2 * borderH - Math.round(bh * 0.1);
-  const innerD = regionDensity(img, innerX, innerY, innerW, innerH, threshold);
-
-  if (innerD > MAX_INNER_DENSITY) {
-    return {
-      ok: false,
-      reason: 'inner_black_density_too_high',
-      debug: { borderDensity, innerDensity: innerD, squareRatio: bw / bh } as any,
-    };
-  }
-
-  // center region
-  const cx = x + Math.round(bw * 0.35);
-  const cy = y + Math.round(bh * 0.35);
-  const cw = Math.round(bw * 0.30);
-  const ch = Math.round(bh * 0.30);
-  const centerD = regionDensity(img, cx, cy, cw, ch, threshold);
+  // --- 2. Center danger zone density check ---
+  const czStart = Math.round(side * CENTER_ZONE_START);
+  const czEnd = Math.round(side * CENTER_ZONE_END);
+  const czSize = czEnd - czStart;
+  const centerD = regionDensity(
+    img,
+    x + Math.round(bw * CENTER_ZONE_START),
+    y + Math.round(bh * CENTER_ZONE_START),
+    Math.round(bw * (CENTER_ZONE_END - CENTER_ZONE_START)),
+    Math.round(bh * (CENTER_ZONE_END - CENTER_ZONE_START)),
+    threshold
+  );
 
   if (centerD > MAX_CENTER_DENSITY) {
     return {
       ok: false,
       reason: 'center_black_density_too_high',
-      debug: { borderDensity, innerDensity: innerD, centerDensity: centerD, squareRatio: bw / bh } as any,
+      debug: { borderDensity, centerDensity: centerD, squareRatio: bw / bh } as any,
     };
   }
 
-  const anchorResult = findAnchor(img, bbox, threshold);
-  if (!anchorResult.found) {
+  // --- 3. Find internal connected black components ---
+  const excl = Math.round(side * BORDER_EXCLUSION);
+  const interiorX = x + excl;
+  const interiorY = y + excl;
+  const interiorW = bw - 2 * excl;
+  const interiorH = bh - 2 * excl;
+
+  const components = findBlackComponents(img, interiorX, interiorY, interiorW, interiorH, threshold);
+
+  // --- 4. Classify components ---
+  const anchorZoneStartPx = Math.round(side * ANCHOR_ZONE_START);
+  const anchorZoneEndPx = Math.round(side * ANCHOR_ZONE_END);
+  const minAnchorSide = Math.round(side * MIN_ANCHOR_SIDE);
+  const maxAnchorSide = Math.round(side * MAX_ANCHOR_SIDE);
+  const markerArea = bw * bh;
+  const maxInternalSide = Math.round(side * MAX_INTERNAL_COMPONENT_SIDE);
+
+  // check for oversized corner blocks (anchor_too_large)
+  for (const comp of components) {
+    const zone = getAnchorZone(comp, bbox, anchorZoneStartPx, anchorZoneEndPx);
+    if (zone && Math.max(comp.width, comp.height) > maxAnchorSide) {
+      return {
+        ok: false,
+        reason: 'anchor_too_large',
+        debug: {
+          borderDensity,
+          centerDensity: centerD,
+          componentSize: `${comp.width}x${comp.height}`,
+          squareRatio: bw / bh,
+        } as any,
+      };
+    }
+  }
+
+  // check for large non-corner internal blocks
+  for (const comp of components) {
+    const zone = getAnchorZone(comp, bbox, anchorZoneStartPx, anchorZoneEndPx);
+    if (!zone && Math.max(comp.width, comp.height) > maxInternalSide) {
+      return {
+        ok: false,
+        reason: 'invalid_large_black_block',
+        debug: {
+          borderDensity,
+          centerDensity: centerD,
+          componentSize: `${comp.width}x${comp.height}`,
+          squareRatio: bw / bh,
+        } as any,
+      };
+    }
+  }
+
+  // --- 5. Find valid anchor components ---
+  const validAnchors: { comp: Component; zone: AnchorPosition }[] = [];
+
+  for (const comp of components) {
+    const zone = getAnchorZone(comp, bbox, anchorZoneStartPx, anchorZoneEndPx);
+    if (!zone) continue;
+
+    const aspect = comp.width / comp.height;
+    if (aspect < MIN_ANCHOR_ASPECT || aspect > MAX_ANCHOR_ASPECT) continue;
+
+    const compSide = Math.max(comp.width, comp.height);
+    if (compSide < minAnchorSide || compSide > maxAnchorSide) continue;
+
+    const areaRatio = comp.area / markerArea;
+    if (areaRatio < MIN_ANCHOR_AREA_RATIO || areaRatio > MAX_ANCHOR_AREA_RATIO) continue;
+
+    validAnchors.push({ comp, zone });
+  }
+
+  if (validAnchors.length === 0) {
+    // try relaxed: if there's a component in a corner zone with reasonable density
+    // this handles camera captures where anchor isn't perfectly rectangular
+    const relaxed = findRelaxedAnchor(components, bbox, anchorZoneStartPx, anchorZoneEndPx, minAnchorSide, maxAnchorSide, markerArea);
+    if (relaxed) {
+      validAnchors.push(relaxed);
+    }
+  }
+
+  if (validAnchors.length === 0) {
     return {
       ok: false,
-      reason: anchorResult.reason,
+      reason: 'missing_valid_corner_anchor',
       debug: {
         borderDensity,
-        innerDensity: innerD,
         centerDensity: centerD,
-        anchorDensities: anchorResult.densities,
+        totalComponents: components.length,
         squareRatio: bw / bh,
-      },
+      } as any,
     };
   }
 
+  if (validAnchors.length > 1) {
+    // pick the one with highest area ratio (most anchor-like)
+    validAnchors.sort((a, b) => b.comp.area - a.comp.area);
+    const best = validAnchors[0];
+    const second = validAnchors[1];
+    // if they're too close in size, reject as ambiguous
+    if (second.comp.area > best.comp.area * 0.7) {
+      return {
+        ok: false,
+        reason: 'multiple_anchor_candidates',
+        debug: { borderDensity, centerDensity: centerD, squareRatio: bw / bh } as any,
+      };
+    }
+  }
+
+  const anchor = validAnchors[0];
+
+  // --- 6. Broad inner density check (excluding anchor area) ---
+  const innerStartX = x + Math.round(bw * INNER_ZONE_START);
+  const innerStartY = y + Math.round(bh * INNER_ZONE_START);
+  const innerW = Math.round(bw * (INNER_ZONE_END - INNER_ZONE_START));
+  const innerH = Math.round(bh * (INNER_ZONE_END - INNER_ZONE_START));
+  const innerD = regionDensity(img, innerStartX, innerStartY, innerW, innerH, threshold);
+
+  // subtract approximate anchor contribution
+  const anchorContrib = anchor.comp.area / (innerW * innerH);
+  const adjustedInnerD = Math.max(0, innerD - anchorContrib);
+
+  if (adjustedInnerD > MAX_INNER_DENSITY) {
+    return {
+      ok: false,
+      reason: 'inner_black_density_too_high',
+      debug: {
+        borderDensity,
+        centerDensity: centerD,
+        innerDensity: adjustedInnerD,
+        squareRatio: bw / bh,
+      } as any,
+    };
+  }
+
+  // --- 7. Success ---
   const debug: MarkerDebugInfo = {
     borderDensity,
-    anchorDensities: anchorResult.densities,
-    innerDensity: innerD,
+    anchorDensities: {
+      'top-left': 0, 'top-right': 0, 'bottom-left': 0, 'bottom-right': 0,
+      [anchor.zone]: anchor.comp.area / (anchor.comp.width * anchor.comp.height),
+    },
+    innerDensity: adjustedInnerD,
     centerDensity: centerD,
     squareRatio: bw / bh,
   };
 
   const avgBorder = (topD + bottomD + leftD + rightD) / 4;
-  const confidence = avgBorder * 0.5
-    + anchorResult.densities[anchorResult.position!] * 0.3
-    + (1 - innerD) * 0.2;
+  const confidence = avgBorder * 0.4
+    + (anchor.comp.area / markerArea) * 8 // normalize to ~0.3
+    + (1 - adjustedInnerD) * 0.3;
 
   return {
     ok: true,
     bbox,
-    anchor: anchorResult.position!,
-    confidence,
+    anchor: anchor.zone,
+    confidence: Math.min(1, confidence),
     debug,
   };
 }
 
-interface AnchorResult {
-  found: boolean;
-  position?: AnchorPosition;
-  reason: string;
-  densities: Record<AnchorPosition, number>;
-}
-
-function findAnchor(img: ImageData, bbox: BBox, threshold: number): AnchorResult {
-  const { x, y, width: bw, height: bh } = bbox;
-  const s0 = ANCHOR_INSET_START;
-  const s1 = ANCHOR_INSET_END;
-
-  const corners: Record<AnchorPosition, [number, number, number, number]> = {
-    'top-left':     [x + Math.round(bw * s0), y + Math.round(bh * s0), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
-    'top-right':    [x + Math.round(bw * (1 - s1)), y + Math.round(bh * s0), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
-    'bottom-left':  [x + Math.round(bw * s0), y + Math.round(bh * (1 - s1)), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
-    'bottom-right': [x + Math.round(bw * (1 - s1)), y + Math.round(bh * (1 - s1)), Math.round(bw * (s1 - s0)), Math.round(bh * (s1 - s0))],
-  };
-
-  const densities = {} as Record<AnchorPosition, number>;
-  const positions = Object.keys(corners) as AnchorPosition[];
-
-  for (const pos of positions) {
-    const [rx, ry, rw, rh] = corners[pos];
-    densities[pos] = regionDensity(img, rx, ry, rw, rh, threshold);
-  }
-
-  const hits = positions.filter(p => densities[p] >= MIN_ANCHOR_DENSITY);
-
-  if (hits.length === 0) {
-    // no corner meets absolute threshold — try relative comparison.
-    // if one corner is clearly denser than all others, it's likely
-    // the anchor degraded by camera blur or small marker size.
-    const sorted = [...positions].sort((a, b) => densities[b] - densities[a]);
-    const best = densities[sorted[0]];
-    const second = densities[sorted[1]];
-
-    if (best >= 0.12 && best - second >= 0.06) {
-      const [ax, ay, aw, ah] = corners[sorted[0]];
-      if (!isAnchorOversized(img, bbox, sorted[0], ax, ay, aw, ah, threshold)) {
-        return { found: true, position: sorted[0], reason: '', densities };
-      }
-    }
-
-    const dStr = positions.map(p => `${p[0]}${p[4]}=${densities[p].toFixed(2)}`).join(' ');
-    return { found: false, reason: `missing_corner_anchor(${dStr})`, densities };
-  }
-
-  if (hits.length > 1) {
-    const sorted = [...hits].sort((a, b) => densities[b] - densities[a]);
-    const gap = densities[sorted[0]] - densities[sorted[1]];
-    if (gap < 0.10) {
-      return { found: false, reason: 'multiple_anchor_candidates', densities };
-    }
-    return { found: true, position: sorted[0], reason: '', densities };
-  }
-
-  const anchorPos = hits[0];
-  const [ax, ay, aw, ah] = corners[anchorPos];
-  if (isAnchorOversized(img, bbox, anchorPos, ax, ay, aw, ah, threshold)) {
-    return { found: false, reason: 'anchor_too_large', densities };
-  }
-
-  return { found: true, position: anchorPos, reason: '', densities };
-}
-
-function isAnchorOversized(
-  img: ImageData,
+/**
+ * Determine which anchor zone a component's centroid falls into.
+ * Returns null if not in any valid corner anchor zone.
+ */
+function getAnchorZone(
+  comp: Component,
   bbox: BBox,
-  pos: AnchorPosition,
-  cx: number,
-  cy: number,
-  cw: number,
-  ch: number,
-  threshold: number
-): boolean {
-  const span = Math.round(bbox.width * MAX_ANCHOR_SIDE_RATIO * 1.3);
+  zoneStartPx: number,
+  zoneEndPx: number,
+): AnchorPosition | null {
+  // component centroid relative to bbox origin
+  const relCx = comp.centroidX - bbox.x;
+  const relCy = comp.centroidY - bbox.y;
 
-  let probeX: number, probeY: number;
-  switch (pos) {
-    case 'top-left':
-      probeX = cx + cw;
-      probeY = cy + ch;
-      break;
-    case 'top-right':
-      probeX = cx - span;
-      probeY = cy + ch;
-      break;
-    case 'bottom-left':
-      probeX = cx + cw;
-      probeY = cy - span;
-      break;
-    case 'bottom-right':
-      probeX = cx - span;
-      probeY = cy - span;
-      break;
+  const inLeft = relCx >= zoneStartPx && relCx <= zoneEndPx;
+  const inRight = relCx >= (bbox.width - zoneEndPx) && relCx <= (bbox.width - zoneStartPx);
+  const inTop = relCy >= zoneStartPx && relCy <= zoneEndPx;
+  const inBottom = relCy >= (bbox.height - zoneEndPx) && relCy <= (bbox.height - zoneStartPx);
+
+  if (inTop && inLeft) return 'top-left';
+  if (inTop && inRight) return 'top-right';
+  if (inBottom && inLeft) return 'bottom-left';
+  if (inBottom && inRight) return 'bottom-right';
+
+  return null;
+}
+
+/**
+ * Relaxed anchor search for camera captures where the anchor component
+ * might not be perfectly rectangular (due to blur, noise, lighting).
+ * Still requires the component to be in a corner zone and reasonably sized.
+ */
+function findRelaxedAnchor(
+  components: Component[],
+  bbox: BBox,
+  zoneStartPx: number,
+  zoneEndPx: number,
+  minSide: number,
+  maxSide: number,
+  markerArea: number,
+): { comp: Component; zone: AnchorPosition } | null {
+  const candidates: { comp: Component; zone: AnchorPosition; score: number }[] = [];
+
+  for (const comp of components) {
+    const zone = getAnchorZone(comp, bbox, zoneStartPx, zoneEndPx);
+    if (!zone) continue;
+
+    const compSide = Math.max(comp.width, comp.height);
+    // relaxed size: allow slightly smaller (camera blur fragments)
+    if (compSide < minSide * 0.6) continue;
+    if (compSide > maxSide) continue;
+
+    const areaRatio = comp.area / markerArea;
+    if (areaRatio < MIN_ANCHOR_AREA_RATIO * 0.5) continue;
+    if (areaRatio > MAX_ANCHOR_AREA_RATIO * 1.3) continue;
+
+    // score by how anchor-like it is
+    const aspectScore = 1 - Math.abs(1 - comp.width / comp.height);
+    const sizeScore = areaRatio / MAX_ANCHOR_AREA_RATIO;
+    candidates.push({ comp, zone, score: aspectScore * 0.5 + sizeScore * 0.5 });
   }
 
-  probeX = Math.max(bbox.x, probeX);
-  probeY = Math.max(bbox.y, probeY);
-  const pw = Math.min(span, bbox.x + bbox.width - probeX);
-  const ph = Math.min(span, bbox.y + bbox.height - probeY);
+  if (candidates.length === 0) return null;
+  if (candidates.length > 1) {
+    candidates.sort((a, b) => b.score - a.score);
+    // if top two are too close and in different zones, ambiguous
+    if (candidates[1].score > candidates[0].score * 0.8 && candidates[0].zone !== candidates[1].zone) {
+      return null;
+    }
+  }
 
-  if (pw <= 0 || ph <= 0) return false;
+  return { comp: candidates[0].comp, zone: candidates[0].zone };
+}
 
-  return regionDensity(img, probeX, probeY, pw, ph, threshold) > 0.40;
+/**
+ * Find connected black components inside a region using flood fill.
+ * Only returns components above a minimum size threshold.
+ */
+function findBlackComponents(
+  img: ImageData,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  threshold: number
+): Component[] {
+  const minArea = Math.round(rw * rh * 0.003); // ignore tiny noise
+
+  // build binary grid for the interior region
+  const visited = new Uint8Array(rw * rh);
+  const components: Component[] = [];
+
+  for (let row = 0; row < rh; row++) {
+    for (let col = 0; col < rw; col++) {
+      const idx = row * rw + col;
+      if (visited[idx]) continue;
+
+      const px = rx + col;
+      const py = ry + row;
+      if (px >= img.width || py >= img.height) continue;
+      if (grayAt(img, px, py) >= threshold) continue;
+
+      // flood fill this component
+      let minC = col, maxC = col, minR = row, maxR = row;
+      let area = 0;
+      let sumX = 0, sumY = 0;
+      const stack = [idx];
+      visited[idx] = 1;
+
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        const cr = Math.floor(cur / rw);
+        const cc = cur % rw;
+
+        area++;
+        sumX += cc;
+        sumY += cr;
+        if (cc < minC) minC = cc;
+        if (cc > maxC) maxC = cc;
+        if (cr < minR) minR = cr;
+        if (cr > maxR) maxR = cr;
+
+        // 4-connected neighbors (sufficient for solid blocks)
+        const neighbors = [
+          cr > 0 ? (cr - 1) * rw + cc : -1,
+          cr < rh - 1 ? (cr + 1) * rw + cc : -1,
+          cc > 0 ? cr * rw + (cc - 1) : -1,
+          cc < rw - 1 ? cr * rw + (cc + 1) : -1,
+        ];
+
+        for (const n of neighbors) {
+          if (n < 0 || visited[n]) continue;
+          const nr = Math.floor(n / rw);
+          const nc = n % rw;
+          const npx = rx + nc;
+          const npy = ry + nr;
+          if (npx >= img.width || npy >= img.height) continue;
+          if (grayAt(img, npx, npy) >= threshold) continue;
+          visited[n] = 1;
+          stack.push(n);
+        }
+      }
+
+      if (area < minArea) continue;
+
+      components.push({
+        x: rx + minC,
+        y: ry + minR,
+        width: maxC - minC + 1,
+        height: maxR - minR + 1,
+        area,
+        centroidX: rx + Math.round(sumX / area),
+        centroidY: ry + Math.round(sumY / area),
+      });
+    }
+  }
+
+  return components;
 }

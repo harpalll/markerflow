@@ -176,3 +176,54 @@ export function generateHeavyFill(size: number, padding = 20): ImageData {
 
   return img;
 }
+
+/**
+ * Large block in upper-left inner region (not small enough to be anchor).
+ * Simulates TestImage6-Incorrect. Should be REJECTED.
+ */
+export function generateLargeUpperLeftBlock(size: number, padding = 20): ImageData {
+  const img = generateBorderOnly(size, padding);
+  const ox = padding, oy = padding;
+  const borderW = Math.round(size * 0.12);
+
+  // large block — 30% of marker side, near upper-left but too big
+  const blockSize = Math.round(size * 0.30);
+  const inset = borderW + Math.round(size * 0.04);
+
+  for (let y = oy + inset; y < oy + inset + blockSize; y++) {
+    for (let x = ox + inset; x < ox + inset + blockSize; x++) {
+      if (x >= 0 && y >= 0 && x < img.width && y < img.height) {
+        const i = (y * img.width + x) * 4;
+        img.data[i] = 0; img.data[i + 1] = 0; img.data[i + 2] = 0;
+      }
+    }
+  }
+
+  return img;
+}
+
+/**
+ * Block near center-left — not in any corner anchor zone.
+ * Should be REJECTED as anchor_not_in_corner / invalid_large_black_block.
+ */
+export function generateOffCenterBlock(size: number, padding = 20): ImageData {
+  const img = generateBorderOnly(size, padding);
+  const ox = padding, oy = padding;
+  const borderW = Math.round(size * 0.12);
+
+  // medium block placed at left-center (not in any corner zone)
+  const blockSize = Math.round(size * 0.18);
+  const bx = ox + borderW + Math.round(size * 0.05);
+  const by = oy + Math.round((size - blockSize) / 2);
+
+  for (let y = by; y < by + blockSize; y++) {
+    for (let x = bx; x < bx + blockSize; x++) {
+      if (x >= 0 && y >= 0 && x < img.width && y < img.height) {
+        const i = (y * img.width + x) * 4;
+        img.data[i] = 0; img.data[i + 1] = 0; img.data[i + 2] = 0;
+      }
+    }
+  }
+
+  return img;
+}

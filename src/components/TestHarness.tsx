@@ -15,6 +15,8 @@ import {
   generateLargeAnchor,
   generateCenterBlock,
   generateHeavyFill,
+  generateLargeUpperLeftBlock,
+  generateOffCenterBlock,
 } from '../utils/marker/fixtures';
 import type { DetectionResult } from '../types/marker';
 
@@ -51,12 +53,12 @@ const TESTS: TestCase[] = [
     generate: () => generateBorderOnly(300),
   },
   {
-    name: 'Reject — anchor too large',
+    name: 'Reject — oversized corner anchor',
     expected: 'reject',
     generate: () => generateLargeAnchor(300),
   },
   {
-    name: 'Reject — center block',
+    name: 'Reject — center black block',
     expected: 'reject',
     generate: () => generateCenterBlock(300),
   },
@@ -64,6 +66,16 @@ const TESTS: TestCase[] = [
     name: 'Reject — heavy inner fill',
     expected: 'reject',
     generate: () => generateHeavyFill(300),
+  },
+  {
+    name: 'Reject — large upper-left block',
+    expected: 'reject',
+    generate: () => generateLargeUpperLeftBlock(300),
+  },
+  {
+    name: 'Reject — off-center block (not in corner)',
+    expected: 'reject',
+    generate: () => generateOffCenterBlock(300),
   },
 ];
 
