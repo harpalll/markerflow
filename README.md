@@ -6,6 +6,12 @@ Detects a specific visual marker (Marker 1) from a live camera feed, extracts it
 
 ---
 
+## Download APK
+
+[**Download Installable APK**](https://expo.dev/accounts/harpalsinh/projects/markerflow/builds/1fabf0de-d0f6-4a98-8541-d9e4e105ce70)
+
+---
+
 ## Quick Start
 
 ### Prerequisites
