@@ -13,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import * as Haptics from 'expo-haptics';
 import {
   REQUIRED_MARKERS,
   OUTPUT_SIZE,
@@ -40,10 +41,12 @@ export function ScannerScreen() {
   const [debugInfo, setDebugInfo] = useState('');
   const [processing, setProcessing] = useState(false);
   const [autoScan, setAutoScan] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const cameraReady = useRef(false);
   const processingRef = useRef(false);
   const markersRef = useRef<ProcessedMarker[]>([]);
+  const scanStartRef = useRef<number | null>(null);
 
   const handleCameraReady = useCallback(() => {
     cameraReady.current = true;
@@ -62,7 +65,14 @@ export function ScannerScreen() {
   }, [autoScan]);
 
   const toggleAutoScan = useCallback(() => {
-    setAutoScan(prev => !prev);
+    setAutoScan(prev => {
+      if (!prev) {
+        // starting scan
+        scanStartRef.current = Date.now();
+        setElapsedMs(null);
+      }
+      return !prev;
+    });
   }, []);
 
   const captureAndDetect = useCallback(async () => {
@@ -92,11 +102,29 @@ export function ScannerScreen() {
         return;
       }
 
+      // enforce 2000-3000px resolution constraint for detection source
+      const maxFeedRes = 3000;
+      const photoMax = Math.max(photo.width, photo.height);
+      let feedUri = photo.uri;
+      let feedW = photo.width;
+      let feedH = photo.height;
+
+      if (photoMax > maxFeedRes) {
+        const scaled = await manipulateAsync(
+          photo.uri,
+          [{ resize: { width: Math.min(photo.width, maxFeedRes) } }],
+          { format: SaveFormat.JPEG, compress: 0.9 }
+        );
+        feedUri = scaled.uri;
+        feedW = scaled.width;
+        feedH = scaled.height;
+      }
+
       setStatus('Detecting...');
-      setDebugInfo(`${photo.width}x${photo.height}`);
+      setDebugInfo(`feed: ${feedW}x${feedH} (src: ${photo.width}x${photo.height})`);
 
       const small = await manipulateAsync(
-        photo.uri,
+        feedUri,
         [{ resize: { width: DETECTION_DOWNSCALE } }],
         { format: SaveFormat.JPEG, compress: 0.8, base64: true }
       );
@@ -199,9 +227,13 @@ export function ScannerScreen() {
         const next = [...prev, marker];
         if (next.length >= REQUIRED_MARKERS) {
           setAutoScan(false);
-          setStatus('All markers collected');
+          const totalMs = scanStartRef.current ? Date.now() - scanStartRef.current : null;
+          setElapsedMs(totalMs);
+          setStatus(`All markers collected${totalMs ? ` in ${(totalMs / 1000).toFixed(1)}s` : ''}`);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
           setStatus(`Detected (${next.length}/${REQUIRED_MARKERS})`);
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         }
         return next;
       });
@@ -219,6 +251,8 @@ export function ScannerScreen() {
     setMarkers([]);
     setStatus('Point camera at a marker');
     setDebugInfo('');
+    setElapsedMs(null);
+    scanStartRef.current = null;
   }, []);
 
   // --- Permission states ---
@@ -261,6 +295,11 @@ export function ScannerScreen() {
           <Text style={styles.headerTitle}>
             {markers.length} Marker{markers.length !== 1 ? 's' : ''} Detected
           </Text>
+          {elapsedMs != null && (
+            <Text style={styles.elapsedText}>
+              {(elapsedMs / 1000).toFixed(1)}s total
+            </Text>
+          )}
         </View>
 
         <ScrollView contentContainerStyle={styles.grid}>
@@ -605,6 +644,11 @@ const styles = StyleSheet.create({
     color: '#f0f0f0',
     fontSize: 16,
     fontWeight: '700',
+  },
+  elapsedText: {
+    color: '#4ade80',
+    fontSize: 13,
+    fontWeight: '600',
   },
   grid: {
     flexDirection: 'row',

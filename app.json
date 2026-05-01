@@ -16,9 +16,10 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.harpalll.markerflow",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0a0a0a"
       },
       "edgeToEdgeEnabled": true
     },
