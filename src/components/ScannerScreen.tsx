@@ -78,12 +78,15 @@ export function ScannerScreen() {
 
       if (result.stats) {
         const s = result.stats;
-        setDebugInfo(
-          `${s.imgSize} | mean=${s.mean} thresh=${s.threshold} black=${s.blackPct}%` +
-          `\ncandidates=${s.candidatesChecked ?? 0}` +
-          (s.candidateBox ? ` best: ${s.candidateBox} ratio=${s.squareRatio}` : '') +
-          (s.candidateFound ? ' [MATCH]' : '')
-        );
+        const line1 = `${s.imgSize} mean=${s.mean} thr=${s.threshold} blk=${s.blackPct}%`;
+        let line2 = `found ${s.totalCandidates} candidates`;
+        if (s.candidateFound) {
+          line2 += ` | HIT L${s.hitLevel} ${s.candidateBox} r=${s.squareRatio}`;
+        } else if (s.candidateBox) {
+          line2 += ` | best: ${s.candidateBox} r=${s.squareRatio}`;
+          if (s.rejectReason) line2 += `\nfail: ${s.rejectReason}`;
+        }
+        setDebugInfo(`${line1}\n${line2}`);
       }
 
       if (!result.ok) {
