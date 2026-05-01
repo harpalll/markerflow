@@ -22,6 +22,7 @@ export type DetectionResult =
       anchor: AnchorPosition;
       confidence: number;
       debug: MarkerDebugInfo;
+      tiltDegrees?: number;
     }
   | {
       ok: false;

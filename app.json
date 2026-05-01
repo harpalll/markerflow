@@ -28,7 +28,8 @@
         {
           "cameraPermission": "MarkerFlow needs camera access to scan markers."
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }

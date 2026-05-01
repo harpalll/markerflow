@@ -7,6 +7,7 @@ import {
   ScrollView,
   Platform,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { detectMarker1 } from '../utils/marker/detectMarker1';
 import {
   generateMarker1,
@@ -124,20 +125,36 @@ export function TestHarness() {
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Text style={styles.title}>Detection Test Harness</Text>
+        <Text style={styles.title}>Detection Tests</Text>
         <TouchableOpacity
           style={[styles.btn, running && styles.btnDisabled]}
           onPress={runTests}
           disabled={running}
+          activeOpacity={0.7}
         >
-          <Text style={styles.btnText}>{running ? 'Running...' : 'Run Tests'}</Text>
+          <Ionicons name={running ? 'hourglass' : 'play'} size={14} color="#fff" />
+          <Text style={styles.btnText}>{running ? 'Running...' : 'Run All'}</Text>
         </TouchableOpacity>
       </View>
 
       {total > 0 && (
-        <Text style={[styles.summary, passCount === total ? styles.allPass : styles.someFail]}>
-          {passCount}/{total} passed
-        </Text>
+        <View style={styles.summaryRow}>
+          <Ionicons
+            name={passCount === total ? 'checkmark-circle' : 'alert-circle'}
+            size={18}
+            color={passCount === total ? '#22c55e' : '#ef4444'}
+          />
+          <Text style={[styles.summary, passCount === total ? styles.allPass : styles.someFail]}>
+            {passCount}/{total} passed
+          </Text>
+        </View>
+      )}
+
+      {total === 0 && !running && (
+        <View style={styles.empty}>
+          <Ionicons name="flask-outline" size={36} color="#333" />
+          <Text style={styles.emptyText}>Tap Run All to validate the detection pipeline</Text>
+        </View>
       )}
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
@@ -182,9 +199,12 @@ const styles = StyleSheet.create({
   },
   btn: {
     backgroundColor: '#2563eb',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
   },
   btnDisabled: {
     opacity: 0.5,
@@ -195,13 +215,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   summary: {
-    textAlign: 'center',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
     marginVertical: 8,
   },
   allPass: { color: '#22c55e' },
   someFail: { color: '#ef4444' },
+  empty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    gap: 12,
+  },
+  emptyText: {
+    color: '#555',
+    fontSize: 13,
+    textAlign: 'center',
+  },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 16, paddingBottom: 32 },
   card: {

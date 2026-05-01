@@ -140,7 +140,22 @@ function findAnchor(img: ImageData, bbox: BBox, threshold: number): AnchorResult
   const hits = positions.filter(p => densities[p] >= MIN_ANCHOR_DENSITY);
 
   if (hits.length === 0) {
-    return { found: false, reason: 'missing_corner_anchor', densities };
+    // no corner meets absolute threshold — try relative comparison.
+    // if one corner is clearly denser than all others, it's likely
+    // the anchor degraded by camera blur or small marker size.
+    const sorted = [...positions].sort((a, b) => densities[b] - densities[a]);
+    const best = densities[sorted[0]];
+    const second = densities[sorted[1]];
+
+    if (best >= 0.12 && best - second >= 0.06) {
+      const [ax, ay, aw, ah] = corners[sorted[0]];
+      if (!isAnchorOversized(img, bbox, sorted[0], ax, ay, aw, ah, threshold)) {
+        return { found: true, position: sorted[0], reason: '', densities };
+      }
+    }
+
+    const dStr = positions.map(p => `${p[0]}${p[4]}=${densities[p].toFixed(2)}`).join(' ');
+    return { found: false, reason: `missing_corner_anchor(${dStr})`, densities };
   }
 
   if (hits.length > 1) {
